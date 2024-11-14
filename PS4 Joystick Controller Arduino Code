@@ -1,0 +1,173 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// Replace these with your network credentials
+const char* ssid = "S";
+const char* password = "radhe radhe";
+
+// Create a web server object on port 80
+WebServer server(80);
+
+// Motor control pins
+const int motorA_IN1 = 5;
+const int motorA_IN2 = 18;
+const int motorB_IN3 = 19;
+const int motorB_IN4 = 21;
+
+// Define motor control functions
+void move(int leftSpeed, int rightSpeed) {
+  digitalWrite(motorA_IN1, leftSpeed > 0);
+  digitalWrite(motorA_IN2, leftSpeed < 0);
+  digitalWrite(motorB_IN3, rightSpeed > 0);
+  digitalWrite(motorB_IN4, rightSpeed < 0);
+}
+
+void stop() {
+  move(0, 0);
+  server.send(200, "text/plain", "Stopping");
+}
+
+// HTML and JavaScript for circular joystick interface
+const char* HTMLPage = R"html(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Circular Joystick Control</title>
+  <style>
+    #joystickContainer {
+      width: 200px;
+      height: 200px;
+      position: relative;
+      margin: auto;
+      background-color: #f2f2f2;
+      border: 2px solid #333;
+      border-radius: 50%;
+      touch-action: none;
+    }
+    #joystick {
+      width: 50px;
+      height: 50px;
+      background-color: #333;
+      border-radius: 50%;
+      position: absolute;
+      left: 75px;
+      top: 75px;
+    }
+  </style>
+</head>
+<body>
+  <h2>ESP32 Circular Joystick Control</h2>
+  <div id="joystickContainer">
+    <div id="joystick"></div>
+  </div>
+
+  <script>
+    const joystick = document.getElementById('joystick');
+    const container = document.getElementById('joystickContainer');
+    let isDragging = false;
+    let lastCommandTime = 0;
+
+    container.addEventListener('pointerdown', (e) => {
+      isDragging = true;
+    });
+
+    document.addEventListener('pointermove', (e) => {
+      if (!isDragging) return;
+
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left - rect.width / 2;
+      const y = e.clientY - rect.top - rect.height / 2;
+      const angle = Math.atan2(y, x);
+      const distance = Math.min(Math.sqrt(x * x + y * y), 75);
+
+      joystick.style.left = `${75 + distance * Math.cos(angle)}px`;
+      joystick.style.top = `${75 + distance * Math.sin(angle)}px`;
+
+      // Convert angle and distance to motor control signals
+      let leftSpeed = 0;
+      let rightSpeed = 0;
+
+      if (distance > 10) { // Avoid sending commands at rest
+        if (angle >= -Math.PI / 4 && angle <= Math.PI / 4) {
+          leftSpeed = rightSpeed = 1; // Move forward
+        } else if (angle > Math.PI / 4 && angle < 3 * Math.PI / 4) {
+          leftSpeed = -1;
+          rightSpeed = 1; // Move left
+        } else if (angle >= 3 * Math.PI / 4 || angle <= -3 * Math.PI / 4) {
+          leftSpeed = rightSpeed = -1; // Move backward
+        } else if (angle > -3 * Math.PI / 4 && angle < -Math.PI / 4) {
+          leftSpeed = 1;
+          rightSpeed = -1; // Move right
+        }
+      }
+
+      // Only send command if at least 100ms has passed since the last command
+      if (Date.now() - lastCommandTime > 100) {
+        sendCommand(`move/${leftSpeed}/${rightSpeed}`);
+        lastCommandTime = Date.now();
+      }
+    });
+
+    document.addEventListener('pointerup', () => {
+      isDragging = false;
+      joystick.style.left = '75px';
+      joystick.style.top = '75px';
+      sendCommand('stop');
+    });
+
+    function sendCommand(command) {
+      fetch('/' + command)
+        .then(response => response.text())
+        .then(data => console.log(data))
+        .catch(error => console.error(error));
+    }
+  </script>
+</body>
+</html>
+)html";
+
+void setup() {
+  Serial.begin(115200);
+
+  // Set motor control pins as outputs
+  pinMode(motorA_IN1, OUTPUT);
+  pinMode(motorA_IN2, OUTPUT);
+  pinMode(motorB_IN3, OUTPUT);
+  pinMode(motorB_IN4, OUTPUT);
+
+  // Start with motors stopped
+  stop();
+
+  // Connect to Wi-Fi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.println("Connected to WiFi");
+
+  // Print the IP address
+  Serial.print("ESP32 IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Define endpoints for controlling the robot
+  server.on("/", []() {
+    server.send(200, "text/html", HTMLPage);
+  });
+  server.on("/move/1/1", []() { move(1, 1); server.send(200, "text/plain", "Moving forward"); });
+  server.on("/move/-1/-1", []() { move(-1, -1); server.send(200, "text/plain", "Moving backward"); });
+  server.on("/move/-1/1", []() { move(-1, 1); server.send(200, "text/plain", "Turning left"); });
+  server.on("/move/1/-1", []() { move(1, -1); server.send(200, "text/plain", "Turning right"); });
+  server.on("/stop", stop);
+
+  // Start the server
+  server.begin();
+  Serial.println("Web server started");
+}
+
+void loop() {
+  // Handle client requests
+  server.handleClient();
+}
